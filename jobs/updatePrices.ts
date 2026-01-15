@@ -83,7 +83,7 @@ async function fetchPrice({ currency }: { currency: Currency }) {
 async function updateLatestPrice(client: Client): Promise<UpdatedPrice> {
   const [latestError, latestResult] = await tryCatch<QueryResult<PriceRow>>(
     client.query<PriceRow>(
-      'SELECT eth_usd, degen_usd FROM "Price" ORDER BY id DESC LIMIT 1',
+      'SELECT eth_usd, degen_usd FROM public."Price" ORDER BY id DESC LIMIT 1',
     ),
   );
   if (latestError) {
@@ -118,10 +118,10 @@ async function updateLatestPrice(client: Client): Promise<UpdatedPrice> {
   }
 
   const [insertError] = await tryCatch(
-    client.query('INSERT INTO "Price" (eth_usd, degen_usd) VALUES ($1, $2)', [
-      currentPriceEth.toString(),
-      currentPriceDegen.toString(),
-    ]),
+    client.query(
+      'INSERT INTO public."Price" (eth_usd, degen_usd) VALUES ($1, $2)',
+      [currentPriceEth.toString(), currentPriceDegen.toString()],
+    ),
   );
   if (insertError) {
     throw insertError;
@@ -139,9 +139,15 @@ async function updateLatestPrice(client: Client): Promise<UpdatedPrice> {
 async function updateBountyAmounts(
   client: Client,
   prices: LatestPrice,
+  schemaName: string,
 ): Promise<number> {
+  const safeSchema = schemaName.replace(/"/g, '""');
+  const bountiesTable = `"${safeSchema}"."Bounties"`;
+
   const [bountyError, bountyResult] = await tryCatch<QueryResult<BountyRow>>(
-    client.query<BountyRow>('SELECT id, amount, chain_id FROM "Bounties"'),
+    client.query<BountyRow>(
+      `SELECT id, amount, chain_id FROM ${bountiesTable}`,
+    ),
   );
   if (bountyError) {
     throw bountyError;
@@ -154,20 +160,16 @@ async function updateBountyAmounts(
   }
 
   for (const bounty of bountyResult.rows) {
-    console.log(bounty.id + " - " + bounty.chain_id);
     const amountValue = Number(formatEther(BigInt(bounty.amount)));
     const price =
       bounty.chain_id === 666666666 ? prices.degenUsd : prices.ethUsd;
     const amountSort = amountValue * price;
-    console.log(
-      bounty.amount + " - " + amountValue + " * " + price + " = " + amountSort,
-    );
 
     const [updateError] = await tryCatch(
-      client.query('UPDATE "Bounties" SET amount_sort = $1 WHERE id = $2', [
-        amountSort.toFixed(5),
-        bounty.id,
-      ]),
+      client.query(
+        `UPDATE ${bountiesTable} SET amount_sort = $1 WHERE id = $2`,
+        [amountSort.toFixed(5), bounty.id],
+      ),
     );
     if (updateError) {
       throw updateError;
@@ -218,7 +220,7 @@ async function main() {
       return 0;
     }
 
-    const updatedCount = await updateBountyAmounts(client, prices);
+    const updatedCount = await updateBountyAmounts(client, prices, SCHEMA);
 
     const [commitError] = await tryCatch(client.query("COMMIT"));
     if (commitError) {
