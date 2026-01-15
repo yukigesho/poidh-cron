@@ -6,6 +6,7 @@
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "@types/pg": "^8.15.2",
     "tsx": "^4.20.5"
   },
   "peerDependencies": {
@@ -13,6 +14,8 @@
   },
   "dependencies": {
     "axios": "^1.12.1",
-    "dotenv": "^17.2.2"
+    "dotenv": "^17.2.2",
+    "pg": "^8.16.3",
+    "viem": "^2.37.0"
   }
 }

@@ -1,56 +1,246 @@
-import crypto from "crypto";
-import axios from "axios";
 import dotenv from "dotenv";
 import fs from "fs";
+import { Client, type QueryResult } from "pg";
+import { formatEther, parseEther } from "viem";
 
 fs.existsSync(".env")
   ? dotenv.config({ path: ".env" })
   : dotenv.config({ path: ".env.local" });
 
-const API_KEY = process.env.SERVER_API_KEY;
-const API_SECRET = process.env.SERVER_SECRET;
-const SERVER_URL = process.env.SERVER_URL;
+const DATABASE_URL = process.env.DATABASE_URL;
+const SCHEMA = process.env.SCHEMA;
 
-async function main() {
-  const timestamp = Math.floor(Date.now() / 1000);
-  const body = {};
-  const endpoint = "/updatePrice";
-  const canonical = `POST|${endpoint}|${timestamp}|${JSON.stringify(body)}`;
+type PriceRow = {
+  eth_usd: string;
+  degen_usd: string;
+};
 
-  if (!API_KEY || !API_SECRET) {
+type BountyRow = {
+  id: number;
+  amount: string;
+  chain_id: number;
+};
+
+type Currency = "eth" | "degen";
+
+type LatestPrice = {
+  ethUsd: number;
+  degenUsd: number;
+};
+
+type UpdatedPrice = {
+  prices: LatestPrice;
+  didUpdate: boolean;
+};
+
+async function tryCatch<T>(
+  promise: Promise<T>,
+): Promise<[Error | null, T | null]> {
+  try {
+    const result = await promise;
+    return [null, result];
+  } catch (error) {
+    return [error as Error, null];
+  }
+}
+
+function percentChange({
+  current,
+  previous,
+}: {
+  current: number;
+  previous: number;
+}): number {
+  if (previous === 0) {
+    throw new Error("Previous price === 0");
+  }
+  return Math.abs(((current - previous) / previous) * 100);
+}
+
+async function fetchPrice({ currency }: { currency: Currency }) {
+  let retries = 5;
+  while (true) {
+    try {
+      const response = await fetch(
+        `https://api.coinbase.com/v2/exchange-rates?currency=${currency}`,
+      );
+      const body = await response.json();
+      const price = (body as { data?: { rates?: { USD?: string } } })?.data
+        ?.rates?.USD;
+      if (!price) {
+        throw new Error(`USD price not found… attempts left: ${retries}`);
+      }
+      return Number(price);
+    } catch (error) {
+      if (--retries === 0) {
+        throw new Error("Can not fetch price");
+      }
+      console.error(error);
+    }
+  }
+}
+
+async function updateLatestPrice(client: Client): Promise<UpdatedPrice> {
+  const [latestError, latestResult] = await tryCatch<QueryResult<PriceRow>>(
+    client.query<PriceRow>(
+      'SELECT eth_usd, degen_usd FROM "Price" ORDER BY id DESC LIMIT 1',
+    ),
+  );
+  if (latestError) {
+    throw latestError;
+  }
+
+  const latestPrice = latestResult?.rows[0];
+  const [currentPriceEth, currentPriceDegen] = await Promise.all([
+    fetchPrice({ currency: "eth" }),
+    fetchPrice({ currency: "degen" }),
+  ]);
+
+  const shouldUpdatePrice =
+    !latestPrice ||
+    percentChange({
+      current: currentPriceEth,
+      previous: Number(latestPrice.eth_usd),
+    }) > 10 ||
+    percentChange({
+      current: currentPriceDegen,
+      previous: Number(latestPrice.degen_usd),
+    }) > 10;
+
+  if (!shouldUpdatePrice) {
+    return {
+      prices: {
+        ethUsd: Number(latestPrice.eth_usd),
+        degenUsd: Number(latestPrice.degen_usd),
+      },
+      didUpdate: false,
+    };
+  }
+
+  const [insertError] = await tryCatch(
+    client.query('INSERT INTO "Price" (eth_usd, degen_usd) VALUES ($1, $2)', [
+      currentPriceEth.toString(),
+      currentPriceDegen.toString(),
+    ]),
+  );
+  if (insertError) {
+    throw insertError;
+  }
+
+  return {
+    prices: {
+      ethUsd: currentPriceEth,
+      degenUsd: currentPriceDegen,
+    },
+    didUpdate: true,
+  };
+}
+
+async function updateBountyAmounts(
+  client: Client,
+  prices: LatestPrice,
+): Promise<number> {
+  const [bountyError, bountyResult] = await tryCatch<QueryResult<BountyRow>>(
+    client.query<BountyRow>('SELECT id, amount, chain_id FROM "Bounties"'),
+  );
+  if (bountyError) {
+    throw bountyError;
+  }
+
+  if (!bountyResult?.rows) {
     throw new Error(
-      "API key or API secret is missing",
+      "Something went wrong with bountyResult.rows. It`s undefined!",
     );
   }
 
-  const hmac = crypto.createHmac(
-    "sha256",
-    API_SECRET,
-  );
+  for (const bounty of bountyResult.rows) {
+    console.log(bounty.id + " - " + bounty.chain_id);
+    const amountValue = Number(formatEther(BigInt(bounty.amount)));
+    const price =
+      bounty.chain_id === 666666666 ? prices.degenUsd : prices.ethUsd;
+    const amountSort = amountValue * price;
+    console.log(
+      bounty.amount + " - " + amountValue + " * " + price + " = " + amountSort,
+    );
 
-  const signature = hmac
-    .update(canonical)
-    .digest("hex");
+    const [updateError] = await tryCatch(
+      client.query('UPDATE "Bounties" SET amount_sort = $1 WHERE id = $2', [
+        amountSort.toFixed(5),
+        bounty.id,
+      ]),
+    );
+    if (updateError) {
+      throw updateError;
+    }
+  }
 
-  return axios.post(
-    `${SERVER_URL}${endpoint}`,
-    body,
-    {
-      headers: {
-        "X-API-Key": API_KEY,
-        "X-Signature": signature,
-        "X-Timestamp": timestamp,
-      },
-    },
-  );
+  return bountyResult.rowCount ?? 0;
 }
-if (
-  import.meta.url === `file://${process.argv[1]}`
-) {
+
+async function main() {
+  if (!DATABASE_URL) {
+    throw new Error("DATABASE_URL is required");
+  }
+  if (!SCHEMA) {
+    throw new Error("SCHEMA is required");
+  }
+
+  const client = new Client({ connectionString: DATABASE_URL });
+  const [connectError] = await tryCatch(client.connect());
+  if (connectError) {
+    throw connectError;
+  }
+
+  let transactionStarted = false;
+  try {
+    const safeSchema = SCHEMA.replace(/"/g, '""');
+    const [schemaError] = await tryCatch(
+      client.query(`SET search_path TO "${safeSchema}"`),
+    );
+    if (schemaError) {
+      throw schemaError;
+    }
+
+    const [beginError] = await tryCatch(client.query("BEGIN"));
+    if (beginError) {
+      throw beginError;
+    }
+    transactionStarted = true;
+
+    const { prices, didUpdate } = await updateLatestPrice(client);
+    if (!didUpdate) {
+      const [rollbackError] = await tryCatch(client.query("ROLLBACK"));
+      if (rollbackError) {
+        throw rollbackError;
+      }
+      transactionStarted = false;
+      console.log("price change below 10%, skipping bounty updates");
+      return 0;
+    }
+
+    const updatedCount = await updateBountyAmounts(client, prices);
+
+    const [commitError] = await tryCatch(client.query("COMMIT"));
+    if (commitError) {
+      throw commitError;
+    }
+    transactionStarted = false;
+
+    console.log(`updated amount_sort for ${updatedCount} bounties`);
+    return 0;
+  } catch (error) {
+    if (transactionStarted) {
+      await client.query("ROLLBACK");
+    }
+    throw error;
+  } finally {
+    await client.end();
+  }
+}
+if (import.meta.url === `file://${process.argv[1]}`) {
   main()
-    .then((response) => {
+    .then(() => {
       console.log("finished with code 0");
-      console.log(response.data);
       process.exit(0);
     })
     .catch((e) => {
