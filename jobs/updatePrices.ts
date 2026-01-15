@@ -1,14 +1,14 @@
 import dotenv from "dotenv";
 import fs from "fs";
 import { Client, type QueryResult } from "pg";
-import { formatEther, parseEther } from "viem";
+import { formatEther } from "viem";
 
 fs.existsSync(".env")
   ? dotenv.config({ path: ".env" })
   : dotenv.config({ path: ".env.local" });
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const SCHEMA = process.env.SCHEMA;
+const DEPLOYMENT_ID_URL = "https://indexer.poidh.xyz/deployment_id";
 
 type PriceRow = {
   eth_usd: string;
@@ -78,6 +78,22 @@ async function fetchPrice({ currency }: { currency: Currency }) {
       console.error(error);
     }
   }
+}
+
+type DeploymentResponse = {
+  deploymentId: string;
+};
+
+async function fetchDeploymentId(): Promise<string> {
+  const response = await fetch(DEPLOYMENT_ID_URL);
+  if (!response.ok) {
+    throw new Error(`Deployment ID fetch failed: ${response.status}`);
+  }
+  const body = (await response.json()) as DeploymentResponse;
+  if (!body?.deploymentId) {
+    throw new Error("Deployment ID missing from response");
+  }
+  return body.deploymentId;
 }
 
 async function updateLatestPrice(client: Client): Promise<UpdatedPrice> {
@@ -183,9 +199,7 @@ async function main() {
   if (!DATABASE_URL) {
     throw new Error("DATABASE_URL is required");
   }
-  if (!SCHEMA) {
-    throw new Error("SCHEMA is required");
-  }
+  const schemaName = await fetchDeploymentId();
 
   const client = new Client({ connectionString: DATABASE_URL });
   const [connectError] = await tryCatch(client.connect());
@@ -195,7 +209,7 @@ async function main() {
 
   let transactionStarted = false;
   try {
-    const safeSchema = SCHEMA.replace(/"/g, '""');
+    const safeSchema = schemaName.replace(/"/g, '""');
     const [schemaError] = await tryCatch(
       client.query(`SET search_path TO "${safeSchema}"`),
     );
@@ -220,7 +234,7 @@ async function main() {
       return 0;
     }
 
-    const updatedCount = await updateBountyAmounts(client, prices, SCHEMA);
+    const updatedCount = await updateBountyAmounts(client, prices, schemaName);
 
     const [commitError] = await tryCatch(client.query("COMMIT"));
     if (commitError) {
