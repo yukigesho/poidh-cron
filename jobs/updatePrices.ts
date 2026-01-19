@@ -209,14 +209,6 @@ async function main() {
 
   let transactionStarted = false;
   try {
-    const safeSchema = schemaName.replace(/"/g, '""');
-    const [schemaError] = await tryCatch(
-      client.query(`SET search_path TO "${safeSchema}"`),
-    );
-    if (schemaError) {
-      throw schemaError;
-    }
-
     const [beginError] = await tryCatch(client.query("BEGIN"));
     if (beginError) {
       throw beginError;
