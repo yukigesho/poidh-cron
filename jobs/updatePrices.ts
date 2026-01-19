@@ -152,6 +152,25 @@ async function updateLatestPrice(client: Client): Promise<UpdatedPrice> {
   };
 }
 
+async function ensureLiveQueryTables(
+  client: Client,
+  schemaName: string,
+): Promise<void> {
+  const safeSchema = schemaName.replace(/"/g, '""');
+  const tableName = `"${safeSchema}"."live_query_tables"`;
+
+  const [createError] = await tryCatch(
+    client.query(
+      `CREATE TABLE IF NOT EXISTS ${tableName} (
+        table_name text PRIMARY KEY
+      )`,
+    ),
+  );
+  if (createError) {
+    throw createError;
+  }
+}
+
 async function updateBountyAmounts(
   client: Client,
   prices: LatestPrice,
@@ -226,6 +245,7 @@ async function main() {
       return 0;
     }
 
+    await ensureLiveQueryTables(client, schemaName);
     const updatedCount = await updateBountyAmounts(client, prices, schemaName);
 
     const [commitError] = await tryCatch(client.query("COMMIT"));
