@@ -16,7 +16,7 @@ type PriceRow = {
 
 type BountyRow = {
   bounty_id: number;
-  amount_sort: string;
+  amount: string;
   chain_id: number;
 };
 
@@ -143,7 +143,11 @@ async function updateBountyAmounts(
 
   const [bountyError, bountyResult] = await tryCatch<QueryResult<BountyRow>>(
     client.query<BountyRow>(
-      `SELECT bounty_id, amount_sort, chain_id FROM ${bountiesTable}`,
+      `SELECT extra.bounty_id, extra.chain_id, bounties.amount
+       FROM ${bountiesTable} extra
+       JOIN public."Bounties" bounties
+         ON bounties.id = extra.bounty_id
+        AND bounties.chain_id = extra.chain_id`,
     ),
   );
   if (bountyError) {
@@ -157,7 +161,7 @@ async function updateBountyAmounts(
   }
 
   for (const bounty of bountyResult.rows) {
-    const amountValue = Number(formatEther(BigInt(bounty.bounty_id)));
+    const amountValue = Number(formatEther(BigInt(bounty.amount)));
     const price =
       bounty.chain_id === 666666666 ? prices.degenUsd : prices.ethUsd;
     const amountSort = amountValue * price;
