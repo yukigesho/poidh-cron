@@ -8,7 +8,6 @@ fs.existsSync(".env")
   : dotenv.config({ path: ".env.local" });
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const DEPLOYMENT_ID_URL = "https://indexer.poidh.xyz/deployment_id";
 
 type PriceRow = {
   eth_usd: string;
@@ -16,8 +15,8 @@ type PriceRow = {
 };
 
 type BountyRow = {
-  id: number;
-  amount: string;
+  bounty_id: number;
+  amount_sort: string;
   chain_id: number;
 };
 
@@ -80,22 +79,6 @@ async function fetchPrice({ currency }: { currency: Currency }) {
   }
 }
 
-type DeploymentResponse = {
-  deploymentId: string;
-};
-
-async function fetchDeploymentId(): Promise<string> {
-  const response = await fetch(DEPLOYMENT_ID_URL);
-  if (!response.ok) {
-    throw new Error(`Deployment ID fetch failed: ${response.status}`);
-  }
-  const body = (await response.json()) as DeploymentResponse;
-  if (!body?.deploymentId) {
-    throw new Error("Deployment ID missing from response");
-  }
-  return body.deploymentId;
-}
-
 async function updateLatestPrice(client: Client): Promise<UpdatedPrice> {
   const [latestError, latestResult] = await tryCatch<QueryResult<PriceRow>>(
     client.query<PriceRow>(
@@ -152,36 +135,15 @@ async function updateLatestPrice(client: Client): Promise<UpdatedPrice> {
   };
 }
 
-async function ensureLiveQueryTables(
-  client: Client,
-  schemaName: string,
-): Promise<void> {
-  const safeSchema = schemaName.replace(/"/g, '""');
-  const tableName = `"${safeSchema}"."live_query_tables"`;
-
-  const [createError] = await tryCatch(
-    client.query(
-      `CREATE TABLE IF NOT EXISTS ${tableName} (
-        table_name text PRIMARY KEY
-      )`,
-    ),
-  );
-  if (createError) {
-    throw createError;
-  }
-}
-
 async function updateBountyAmounts(
   client: Client,
   prices: LatestPrice,
-  schemaName: string,
 ): Promise<number> {
-  const safeSchema = schemaName.replace(/"/g, '""');
-  const bountiesTable = `"${safeSchema}"."Bounties"`;
+  const bountiesTable = 'public."BountiesExtra"';
 
   const [bountyError, bountyResult] = await tryCatch<QueryResult<BountyRow>>(
     client.query<BountyRow>(
-      `SELECT id, amount, chain_id FROM ${bountiesTable}`,
+      `SELECT bounty_id, amount_sort, chain_id FROM ${bountiesTable}`,
     ),
   );
   if (bountyError) {
@@ -195,15 +157,15 @@ async function updateBountyAmounts(
   }
 
   for (const bounty of bountyResult.rows) {
-    const amountValue = Number(formatEther(BigInt(bounty.amount)));
+    const amountValue = Number(formatEther(BigInt(bounty.bounty_id)));
     const price =
       bounty.chain_id === 666666666 ? prices.degenUsd : prices.ethUsd;
     const amountSort = amountValue * price;
 
     const [updateError] = await tryCatch(
       client.query(
-        `UPDATE ${bountiesTable} SET amount_sort = $1 WHERE id = $2`,
-        [amountSort.toFixed(5), bounty.id],
+        `UPDATE ${bountiesTable} SET amount_sort = $1 WHERE bounty_id = $2`,
+        [amountSort.toFixed(5), bounty.bounty_id],
       ),
     );
     if (updateError) {
@@ -218,8 +180,6 @@ async function main() {
   if (!DATABASE_URL) {
     throw new Error("DATABASE_URL is required");
   }
-  const schemaName = await fetchDeploymentId();
-
   const client = new Client({ connectionString: DATABASE_URL });
   const [connectError] = await tryCatch(client.connect());
   if (connectError) {
@@ -245,8 +205,7 @@ async function main() {
       return 0;
     }
 
-    await ensureLiveQueryTables(client, schemaName);
-    const updatedCount = await updateBountyAmounts(client, prices, schemaName);
+    const updatedCount = await updateBountyAmounts(client, prices);
 
     const [commitError] = await tryCatch(client.query("COMMIT"));
     if (commitError) {
