@@ -168,8 +168,8 @@ async function updateBountyAmounts(
 
     const [updateError] = await tryCatch(
       client.query(
-        `UPDATE ${bountiesTable} SET amount_sort = $1 WHERE bounty_id = $2`,
-        [amountSort.toFixed(5), bounty.bounty_id],
+        `UPDATE ${bountiesTable} SET amount_sort = $1 WHERE bounty_id = $2 AND chain_id = $3`,
+        [amountSort.toFixed(5), bounty.bounty_id, bounty.chain_id],
       ),
     );
     if (updateError) {
