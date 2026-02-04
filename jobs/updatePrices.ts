@@ -100,11 +100,11 @@ async function updateLatestPrice(client: Client): Promise<UpdatedPrice> {
     percentChange({
       current: currentPriceEth,
       previous: Number(latestPrice.eth_usd),
-    }) > 10 ||
+    }) > 5 ||
     percentChange({
       current: currentPriceDegen,
       previous: Number(latestPrice.degen_usd),
-    }) > 10;
+    }) > 5;
 
   if (!shouldUpdatePrice) {
     return {
