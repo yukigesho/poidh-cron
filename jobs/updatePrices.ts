@@ -95,27 +95,6 @@ async function updateLatestPrice(client: Client): Promise<UpdatedPrice> {
     fetchPrice({ currency: "degen" }),
   ]);
 
-  const shouldUpdatePrice =
-    !latestPrice ||
-    percentChange({
-      current: currentPriceEth,
-      previous: Number(latestPrice.eth_usd),
-    }) > 5 ||
-    percentChange({
-      current: currentPriceDegen,
-      previous: Number(latestPrice.degen_usd),
-    }) > 5;
-
-  if (!shouldUpdatePrice) {
-    return {
-      prices: {
-        ethUsd: Number(latestPrice.eth_usd),
-        degenUsd: Number(latestPrice.degen_usd),
-      },
-      didUpdate: false,
-    };
-  }
-
   const [insertError] = await tryCatch(
     client.query(
       'INSERT INTO public."Price" (eth_usd, degen_usd) VALUES ($1, $2)',
@@ -205,7 +184,7 @@ async function main() {
         throw rollbackError;
       }
       transactionStarted = false;
-      console.log("price change below 10%, skipping bounty updates");
+      console.log("price change below 5%, skipping bounty updates");
       return 0;
     }
 
